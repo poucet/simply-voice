@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+/// Input from the client to a voice stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum VoiceInput {
+    /// Audio chunk from the microphone.
+    Audio(crate::AudioChunk),
+}
+
 /// Voice session events emitted to the client.
 ///
 /// These drive UI state — the client needs to know whether the pipeline
