@@ -22,7 +22,7 @@ pub trait TtsProvider: Send + Sync {
 }
 
 /// A voice available from a TTS provider.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Voice {
     /// Provider-specific voice ID.
     pub id: String,
