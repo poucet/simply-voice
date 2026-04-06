@@ -90,7 +90,7 @@ impl VoxtralProvider {
 #[async_trait]
 impl SttProvider for VoxtralProvider {
     async fn transcribe(&self, audio: AudioChunk) -> Result<Transcription> {
-        let (tx, mut rx) = self.stream().await?;
+        let (tx, mut rx) = SttProvider::stream(self).await?;
         tx.send(audio).await.map_err(|_| anyhow::anyhow!("send failed"))?;
         drop(tx);
 
