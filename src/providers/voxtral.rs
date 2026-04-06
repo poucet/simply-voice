@@ -91,8 +91,24 @@ impl SttProvider for VoxtralProvider {
         drop(tx);
 
         let mut full_text = String::new();
-        while let Some(t) = rx.recv().await {
-            full_text.push_str(&t.text);
+
+        // Timeout to prevent hanging if Mistral WS gets stuck
+        let deadline = tokio::time::sleep(std::time::Duration::from_secs(15));
+        tokio::pin!(deadline);
+
+        loop {
+            tokio::select! {
+                result = rx.recv() => {
+                    match result {
+                        Some(t) => full_text.push_str(&t.text),
+                        None => break,
+                    }
+                }
+                _ = &mut deadline => {
+                    tracing::warn!("voxtral transcribe: timeout after 15s");
+                    break;
+                }
+            }
         }
 
         Ok(Transcription {
