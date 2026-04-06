@@ -8,6 +8,7 @@ default = []
 whisper = ["dep:whisper-rs"]
 voxtral = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
 gemini = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util"]
+elevenlabs = ["dep:reqwest", "dep:serde_json"]
 
 [dependencies]
 anyhow = { workspace = true }

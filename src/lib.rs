@@ -21,3 +21,6 @@ pub use providers::VoxtralProvider;
 
 #[cfg(feature = "gemini")]
 pub use providers::GeminiRealtimeProvider;
+
+#[cfg(feature = "elevenlabs")]
+pub use providers::ElevenLabsProvider;
