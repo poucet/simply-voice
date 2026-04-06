@@ -10,7 +10,7 @@ pub use provider::{
     Transcription, Voice,
     RealtimeConfig, RealtimeEvent, RealtimeInput,
 };
-pub use session::{VoiceSessionEvent, VoiceSessionState};
+pub use session::{VoiceEvent, VoiceState};
 pub use vad::{VoiceActivityDetector, VadEvent};
 
 #[cfg(feature = "whisper")]

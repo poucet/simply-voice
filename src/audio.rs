@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use serde::{Deserialize, Serialize};
 
 /// Standard audio format used across the voice pipeline.
 ///
@@ -8,10 +9,11 @@ pub const SAMPLE_RATE: u32 = 16_000;
 pub const CHANNELS: u16 = 1;
 
 /// A chunk of PCM audio data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AudioChunk {
     /// Raw PCM samples as 16-bit signed integers, little-endian.
     /// 16kHz mono.
+    #[serde(with = "bytes_serde")]
     pub data: Bytes,
     /// Sample rate in Hz. Always 16000 for the standard format.
     pub sample_rate: u32,
@@ -47,5 +49,19 @@ impl AudioChunk {
     /// Returns true if this chunk contains no audio data.
     pub fn is_empty(&self) -> bool {
         self.data.is_empty()
+    }
+}
+
+mod bytes_serde {
+    use bytes::Bytes;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(data: &Bytes, serializer: S) -> Result<S::Ok, S::Error> {
+        data.as_ref().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Bytes, D::Error> {
+        let bytes: Vec<u8> = Deserialize::deserialize(deserializer)?;
+        Ok(Bytes::from(bytes))
     }
 }
