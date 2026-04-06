@@ -111,7 +111,7 @@ impl RealtimeProvider for GeminiRealtimeProvider {
                         json!({
                             "realtimeInput": {
                                 "mediaChunks": [{
-                                    "mimeType": format!("audio/pcm;rate={}", chunk.sample_rate),
+                                    "mimeType": format!("audio/pcm;rate={}", crate::audio::SAMPLE_RATE),
                                     "data": b64
                                 }]
                             }
@@ -185,9 +185,8 @@ impl RealtimeProvider for GeminiRealtimeProvider {
                                         if let Some(b64) = inline.get("data").and_then(|d| d.as_str()) {
                                             match STANDARD.decode(b64) {
                                                 Ok(bytes) => {
-                                                    let chunk = AudioChunk::with_sample_rate(
-                                                        bytes,
-                                                        OUTPUT_SAMPLE_RATE,
+                                                    let chunk = AudioChunk::new(
+                                                        bytes
                                                     );
                                                     let _ = event_tx
                                                         .send(RealtimeEvent::Audio(chunk))

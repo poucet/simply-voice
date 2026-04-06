@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, error, warn};
 
-use crate::audio::AudioChunk;
+use crate::audio::{Audio, AudioChunk};
 use crate::provider::{SttProvider, TtsProvider, Transcription, Voice};
 
 const DEFAULT_BASE_URL: &str = "https://api.mistral.ai";
@@ -269,7 +269,7 @@ impl SttProvider for VoxtralProvider {
 
 #[async_trait]
 impl TtsProvider for VoxtralProvider {
-    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioChunk> {
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Audio> {
         let voice_id = if voice.is_empty() {
             // Default voice — fetch first available
             let voices = self.voices().await.unwrap_or_default();
@@ -308,18 +308,9 @@ impl TtsProvider for VoxtralProvider {
         let audio_b64 = json["audio_data"].as_str()
             .ok_or_else(|| anyhow::anyhow!("no audio_data in response"))?;
 
-        // PCM format returns raw float32 LE samples — convert to PCM16 LE
+        // PCM format returns raw float32 LE samples — keep as f32
         let raw_bytes = STANDARD.decode(audio_b64)?;
-        let pcm16: Vec<u8> = raw_bytes
-            .chunks_exact(4)
-            .flat_map(|chunk| {
-                let sample = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                let i = (sample.clamp(-1.0, 1.0) * 32767.0) as i16;
-                i.to_le_bytes()
-            })
-            .collect();
-
-        Ok(AudioChunk::with_sample_rate(pcm16, 24_000))
+        Ok(Audio::from_f32_bytes(raw_bytes, 24_000))
     }
 
     async fn stream(&self) -> Result<(mpsc::Sender<String>, mpsc::Receiver<AudioChunk>)> {
@@ -366,7 +357,7 @@ impl TtsProvider for VoxtralProvider {
                                         i.to_le_bytes()
                                     })
                                     .collect();
-                                let _ = audio_tx.send(AudioChunk::with_sample_rate(pcm16, 24_000)).await;
+                                let _ = audio_tx.send(AudioChunk::new(pcm16)).await;
                             }
                         }
                     }

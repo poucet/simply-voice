@@ -2,14 +2,15 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::mpsc;
 
-use crate::audio::AudioChunk;
+use crate::audio::{Audio, AudioChunk};
 
 /// Text-to-speech provider: takes text, produces audio.
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
     /// Synthesize a complete text string into audio (non-streaming).
     /// `voice` is a provider-specific voice ID. Empty string uses the provider default.
-    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioChunk>;
+    /// Returns `Audio` which includes format metadata (encoding, sample rate).
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<Audio>;
 
     /// Start a streaming synthesis session.
     ///
