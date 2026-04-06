@@ -8,7 +8,8 @@ use crate::audio::AudioChunk;
 #[async_trait]
 pub trait TtsProvider: Send + Sync {
     /// Synthesize a complete text string into audio (non-streaming).
-    async fn synthesize(&self, text: &str) -> Result<AudioChunk>;
+    /// `voice` is a provider-specific voice ID. Empty string uses the provider default.
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioChunk>;
 
     /// Start a streaming synthesis session.
     ///

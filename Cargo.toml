@@ -6,7 +6,7 @@ edition.workspace = true
 [features]
 default = []
 whisper = ["dep:whisper-rs"]
-voxtral = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util"]
+voxtral = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
 gemini = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util"]
 
 [dependencies]
@@ -25,3 +25,4 @@ base64 = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"], optional = true }
 futures-util = { workspace = true, optional = true }
+url = { workspace = true, optional = true }

@@ -67,18 +67,13 @@ impl VoxtralProvider {
         format!("{}{path}", self.base_url.trim_end_matches('/'))
     }
 
-    /// WebSocket base URL — derive from http base URL.
-    fn ws_url(&self, path: &str) -> String {
+    /// WebSocket base URL — derive from http base URL. Returns base only (no path).
+    fn ws_base(&self) -> String {
         let base = self.base_url.trim_end_matches('/');
-        let ws_base = if base.starts_with("https://") {
+        if base.starts_with("https://") {
             base.replacen("https://", "wss://", 1)
         } else {
             base.replacen("http://", "ws://", 1)
-        };
-        if self.api_key.is_empty() {
-            format!("{ws_base}{path}")
-        } else {
-            format!("{ws_base}{path}?api_key={}", self.api_key)
         }
     }
 }
@@ -90,6 +85,7 @@ impl VoxtralProvider {
 #[async_trait]
 impl SttProvider for VoxtralProvider {
     async fn transcribe(&self, audio: AudioChunk) -> Result<Transcription> {
+        tracing::info!(audio_bytes = audio.data.len(), "voxtral transcribe");
         let (tx, mut rx) = SttProvider::stream(self).await?;
         tx.send(audio).await.map_err(|_| anyhow::anyhow!("send failed"))?;
         drop(tx);
@@ -106,10 +102,34 @@ impl SttProvider for VoxtralProvider {
     }
 
     async fn stream(&self) -> Result<(mpsc::Sender<AudioChunk>, mpsc::Receiver<Transcription>)> {
-        let url = self.ws_url("/v1/audio/transcriptions/stream");
+        // Endpoint: /v1/audio/transcriptions/realtime with model as query param
+        let url = format!(
+            "{}/v1/audio/transcriptions/realtime?model={}",
+            self.ws_base(),
+            self.stt_model,
+        );
+        // Log URL with redacted key
+        let log_url = if url.contains("api_key=") {
+            url.split("api_key=").next().unwrap_or(&url).to_string() + "api_key=***"
+        } else {
+            url.clone()
+        };
+        tracing::info!(url = %log_url, has_api_key = !self.api_key.is_empty(), "voxtral STT: connecting WS");
+
+        // Extract host from URL for the Host header
+        let host = url::Url::parse(&url)
+            .ok()
+            .and_then(|u| u.host_str().map(|h| {
+                match u.port() {
+                    Some(p) => format!("{h}:{p}"),
+                    None => h.to_string(),
+                }
+            }))
+            .unwrap_or_else(|| "api.mistral.ai".to_string());
 
         let mut request = tokio_tungstenite::tungstenite::http::Request::builder()
             .uri(&url)
+            .header("Host", &host)
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
             .header("Sec-WebSocket-Version", "13")
@@ -120,31 +140,56 @@ impl SttProvider for VoxtralProvider {
         }
 
         let request = request.body(())?;
-        let (ws_stream, _) = connect_async(request).await?;
+        let (ws_stream, _) = connect_async(request).await
+            .map_err(|e| {
+                tracing::error!(error = %e, "voxtral STT: WS connect failed");
+                e
+            })?;
         let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
-        // Send setup/config message
-        let setup = json!({
-            "model": self.stt_model,
-            "encoding": "pcm_s16le",
-            "sample_rate": 16000,
-            "language": "en",
-        });
-        ws_tx.send(Message::Text(setup.to_string().into())).await?;
+        // Wait for session.created handshake
+        tracing::debug!("voxtral STT: waiting for session.created");
+        loop {
+            match ws_rx.next().await {
+                Some(Ok(Message::Text(text))) => {
+                    tracing::debug!(raw = %text, "voxtral STT: handshake msg");
+                    if let Ok(msg) = serde_json::from_str::<Value>(&text) {
+                        match msg.get("type").and_then(|t| t.as_str()) {
+                            Some("session.created") => {
+                                tracing::info!("voxtral STT: session created");
+                                break;
+                            }
+                            Some("error") => {
+                                let err = msg["error"]["message"].as_str().unwrap_or("unknown");
+                                anyhow::bail!("voxtral STT session error: {err}");
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Some(Err(e)) => anyhow::bail!("voxtral STT: WS error during handshake: {e}"),
+                None => anyhow::bail!("voxtral STT: WS closed during handshake"),
+                _ => continue,
+            }
+        }
 
         let (audio_tx, mut audio_rx) = mpsc::channel::<AudioChunk>(64);
         let (text_tx, text_rx) = mpsc::channel::<Transcription>(64);
 
-        // Sender: forward audio chunks as binary frames
+        // Sender: audio chunks as base64 JSON messages (Mistral protocol)
         tokio::spawn(async move {
             while let Some(chunk) = audio_rx.recv().await {
-                if let Err(e) = ws_tx.send(Message::Binary(chunk.data.to_vec().into())).await {
-                    warn!("Voxtral STT send error: {e}");
+                let b64 = STANDARD.encode(&chunk.data);
+                let msg = json!({"type": "input_audio.append", "audio": b64});
+                if let Err(e) = ws_tx.send(Message::Text(msg.to_string().into())).await {
+                    warn!("voxtral STT send error: {e}");
                     break;
                 }
             }
-            let _ = ws_tx.close().await;
-            debug!("Voxtral STT sender exited");
+            // Signal end of audio
+            let _ = ws_tx.send(Message::Text(json!({"type": "input_audio.flush"}).to_string().into())).await;
+            let _ = ws_tx.send(Message::Text(json!({"type": "input_audio.end"}).to_string().into())).await;
+            debug!("voxtral STT sender exited");
         });
 
         // Receiver: parse transcription events
@@ -152,38 +197,50 @@ impl SttProvider for VoxtralProvider {
             while let Some(result) = ws_rx.next().await {
                 match result {
                     Ok(Message::Text(text)) => {
+                        tracing::debug!(raw = %text, "voxtral STT: event");
                         let msg: Value = match serde_json::from_str(&text) {
                             Ok(v) => v,
-                            Err(_) => continue,
+                            Err(e) => {
+                                warn!(error = %e, "voxtral STT: parse error");
+                                continue;
+                            }
                         };
 
-                        if let Some(text) = msg.get("text").and_then(|t| t.as_str()) {
-                            if !text.is_empty() {
-                                let is_final = msg.get("type")
-                                    .and_then(|t| t.as_str())
-                                    .map(|t| t == "TranscriptionStreamDone")
-                                    .unwrap_or(false);
-
-                                let _ = text_tx.send(Transcription {
-                                    text: text.to_string(),
-                                    is_final,
-                                }).await;
+                        match msg.get("type").and_then(|t| t.as_str()).unwrap_or("") {
+                            "transcription.text.delta" => {
+                                if let Some(t) = msg.get("text").and_then(|t| t.as_str()) {
+                                    if !t.is_empty() {
+                                        debug!(text = %t, "voxtral STT: delta");
+                                        let _ = text_tx.send(Transcription {
+                                            text: t.to_string(),
+                                            is_final: false,
+                                        }).await;
+                                    }
+                                }
                             }
-                        }
-
-                        if msg.get("type").and_then(|t| t.as_str()) == Some("TranscriptionStreamDone") {
-                            break;
+                            "transcription.done" => {
+                                tracing::info!("voxtral STT: done");
+                                break;
+                            }
+                            "error" => {
+                                let err = msg["error"]["message"].as_str().unwrap_or("unknown");
+                                error!(error = %err, "voxtral STT: server error");
+                                break;
+                            }
+                            other => {
+                                debug!(msg_type = %other, "voxtral STT: unhandled event");
+                            }
                         }
                     }
                     Ok(Message::Close(_)) => break,
                     Err(e) => {
-                        error!("Voxtral STT ws error: {e}");
+                        error!("voxtral STT ws error: {e}");
                         break;
                     }
                     _ => {}
                 }
             }
-            debug!("Voxtral STT receiver exited");
+            debug!("voxtral STT receiver exited");
         });
 
         Ok((audio_tx, text_rx))
@@ -196,10 +253,20 @@ impl SttProvider for VoxtralProvider {
 
 #[async_trait]
 impl TtsProvider for VoxtralProvider {
-    async fn synthesize(&self, text: &str) -> Result<AudioChunk> {
+    async fn synthesize(&self, text: &str, voice: &str) -> Result<AudioChunk> {
+        let voice_id = if voice.is_empty() {
+            // Default voice — fetch first available
+            let voices = self.voices().await.unwrap_or_default();
+            voices.first().map(|v| v.id.clone())
+                .ok_or_else(|| anyhow::anyhow!("no voices available, create one via /v1/audio/voices"))?
+        } else {
+            voice.to_string()
+        };
+
         let body = json!({
             "model": self.tts_model,
             "input": text,
+            "voice": voice_id,
             "response_format": "pcm",
         });
 
@@ -303,7 +370,7 @@ impl TtsProvider for VoxtralProvider {
 
         let resp = req.send().await?;
         let json: Value = resp.json().await?;
-        let voices = json["data"]
+        let voices = json["items"]
             .as_array()
             .map(|arr| {
                 arr.iter()
