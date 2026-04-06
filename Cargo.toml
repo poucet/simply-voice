@@ -6,6 +6,8 @@ edition.workspace = true
 [features]
 default = []
 whisper = ["dep:whisper-rs"]
+voxtral = ["dep:reqwest", "dep:base64", "dep:serde_json"]
+gemini = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -15,4 +17,11 @@ futures = { workspace = true }
 serde = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
+
+# Optional provider deps
 whisper-rs = { version = "0.15.1", optional = true }
+reqwest = { workspace = true, optional = true }
+base64 = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio-tungstenite = { workspace = true, optional = true }
+futures-util = { workspace = true, optional = true }

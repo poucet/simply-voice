@@ -15,3 +15,9 @@ pub use vad::{VoiceActivityDetector, VadEvent};
 
 #[cfg(feature = "whisper")]
 pub use providers::WhisperProvider;
+
+#[cfg(feature = "voxtral")]
+pub use providers::VoxtralProvider;
+
+#[cfg(feature = "gemini")]
+pub use providers::GeminiRealtimeProvider;
