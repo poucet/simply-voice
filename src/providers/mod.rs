@@ -17,7 +17,7 @@ pub use whisper::WhisperProvider;
 pub use voxtral::VoxtralProvider;
 
 #[cfg(feature = "gemini")]
-pub use gemini::GeminiRealtimeProvider;
+pub use gemini::GeminiProvider;
 
 #[cfg(feature = "elevenlabs")]
 pub use elevenlabs::ElevenLabsProvider;

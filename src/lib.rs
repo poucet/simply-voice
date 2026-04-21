@@ -20,7 +20,7 @@ pub use providers::WhisperProvider;
 pub use providers::VoxtralProvider;
 
 #[cfg(feature = "gemini")]
-pub use providers::GeminiRealtimeProvider;
+pub use providers::GeminiProvider;
 
 #[cfg(feature = "elevenlabs")]
 pub use providers::ElevenLabsProvider;
