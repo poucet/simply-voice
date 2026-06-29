@@ -9,6 +9,18 @@ whisper = ["dep:whisper-rs"]
 voxtral = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
 gemini = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util"]
 elevenlabs = ["dep:reqwest", "dep:serde_json"]
+pocket-tts = ["dep:pocket-tts"]
+kyutai = [
+    "dep:moshi",
+    "dep:candle",
+    "dep:candle-nn",
+    "dep:candle-transformers",
+    "dep:sentencepiece",
+    "dep:hf-hub",
+    "dep:serde_json",
+]
+# Apple Silicon acceleration for the local-model providers.
+metal = ["candle?/metal", "candle-nn?/metal", "pocket-tts?/metal"]
 
 [dependencies]
 anyhow = { workspace = true }
@@ -27,3 +39,12 @@ serde_json = { workspace = true, optional = true }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"], optional = true }
 futures-util = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
+
+# Local-model providers (pocket-tts TTS, Kyutai streaming STT)
+pocket-tts = { version = "0.6", optional = true }
+moshi = { version = "0.6.1", optional = true }
+candle = { version = "0.9.1", package = "candle-core", optional = true }
+candle-nn = { version = "0.9.1", optional = true }
+candle-transformers = { version = "0.9.1", optional = true }
+sentencepiece = { version = "0.11.3", optional = true }
+hf-hub = { version = "0.4.3", optional = true }

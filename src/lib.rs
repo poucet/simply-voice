@@ -24,3 +24,9 @@ pub use providers::GeminiProvider;
 
 #[cfg(feature = "elevenlabs")]
 pub use providers::ElevenLabsProvider;
+
+#[cfg(feature = "pocket-tts")]
+pub use providers::PocketTtsProvider;
+
+#[cfg(feature = "kyutai")]
+pub use providers::KyutaiSttProvider;
