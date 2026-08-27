@@ -2,16 +2,13 @@
 //! candle port (kyutai-labs delayed-streams-modeling). Model weights
 //! auto-download from Hugging Face on first load.
 //
-// VERIFY (offline assumptions, mirrors kyutai stt-rs example verbatim):
-// - moshi 0.6.1 API: asr::State::new(1, delay, 0., mimi, lm), state.step_pcm(pcm,
-//   None, &().into(), |_, _, _| ()) -> Vec<AsrMsg>, AsrMsg::{Word{tokens,..},
-//   EndWord{..}, Step{prs,..}}, lm::Config/ExtraHeadsConfig fields as in the
-//   upstream stt-rs example pinned to the same versions.
-// - moshi::asr::State, mimi, LmModel and sentencepiece::SentencePieceProcessor
-//   are Send (required for Arc<Mutex<Inner>> to cross into spawn_blocking).
-// - step_pcm accepts a final partial (<1920 sample) frame, as upstream does.
-// - prs semantics: P(no voice activity) at horizons [0.5s, 1s, 2s, 3s]; only
-//   valid because we always load with the VAD extra heads enabled.
+// API assumptions compile-verified against moshi 0.6.4 (mirrors the upstream
+// kyutai stt-rs example): asr::State::new, step_pcm, AsrMsg variants,
+// lm::Config/ExtraHeadsConfig fields, and the Send bounds needed for
+// Arc<Mutex<Inner>> to cross into spawn_blocking. Runtime behavior still
+// unverified: HF auto-download, step_pcm accepting a final partial (<1920
+// sample) frame, and prs semantics — P(no voice activity) at horizons
+// [0.5s, 1s, 2s, 3s], valid only because we load with VAD extra heads enabled.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;

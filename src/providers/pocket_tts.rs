@@ -2,16 +2,12 @@
 //! (candle port). Runs on CPU, ~2x faster with the `metal` feature on Apple
 //! Silicon. Model weights auto-download from Hugging Face on first load.
 //
-// VERIFY (offline assumptions, from the pocket-tts 0.6 README):
-// - pocket_tts::TTSModel::load(variant) auto-downloads from HF (HF_TOKEN env
-//   if needed); model.sample_rate is a numeric field.
-// - model.get_voice_state(voice) accepts a bundled voice name ("alba"), a
-//   .wav path, or a precomputed .safetensors embedding path.
-// - model.generate(text, &state) -> Result<Vec<f32>>;
-//   model.generate_stream(text, &state) -> iterator of Result<Vec<f32>>.
-//   Split borrows below keep model/voice_states disjoint in case these take
-//   &mut self.
-// - TTSModel and ModelState are Send (required to cross into spawn_blocking).
+// API assumptions compile-verified against pocket-tts 0.6.2: TTSModel::load,
+// model.sample_rate, get_voice_state, generate/generate_stream returning
+// candle Tensors (flattened to f32 via flatten_all/to_vec1), and the Send
+// bounds required by spawn_blocking. Runtime behavior still unverified:
+// HF auto-download on first load, and get_voice_state accepting a bundled
+// voice name ("alba"), a .wav path, or a .safetensors embedding path.
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
@@ -134,8 +130,9 @@ impl TtsProvider for PocketTtsProvider {
             // Split borrows: state from the cache, model taken separately.
             let Inner { model, voice_states } = &mut *inner;
             let state = &voice_states[&voice];
+            // generate() returns a candle tensor of f32 samples.
             let audio = model.generate(&text, state)?;
-            Ok(audio)
+            Ok(audio.flatten_all()?.to_vec1::<f32>()?)
         })
         .await??;
 
@@ -169,6 +166,15 @@ impl TtsProvider for PocketTtsProvider {
                 for chunk in chunks {
                     match chunk {
                         Ok(samples) => {
+                            // Stream chunks are candle tensors of f32 samples.
+                            let samples =
+                                match samples.flatten_all().and_then(|t| t.to_vec1::<f32>()) {
+                                    Ok(s) => s,
+                                    Err(e) => {
+                                        error!("pocket-tts: bad audio tensor: {e:#}");
+                                        break;
+                                    }
+                                };
                             let data = Self::f32_to_pcm16_bytes(&samples);
                             if audio_tx.blocking_send(AudioChunk { data }).is_err() {
                                 debug!("pocket-tts stream: receiver dropped");

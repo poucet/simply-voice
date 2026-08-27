@@ -46,5 +46,8 @@ moshi = { version = "0.6.1", optional = true }
 candle = { version = "0.9.1", package = "candle-core", optional = true }
 candle-nn = { version = "0.9.1", optional = true }
 candle-transformers = { version = "0.9.1", optional = true }
-sentencepiece = { version = "0.11.3", optional = true }
+# static: build the bundled sentencepiece/protobuf instead of linking the
+# system one — the process also loads onnxruntime's protobuf (via fastembed),
+# and a dynamic sentencepiece aborts on the version clash at startup.
+sentencepiece = { version = "0.11.3", features = ["static"], optional = true }
 hf-hub = { version = "0.4.3", optional = true }
