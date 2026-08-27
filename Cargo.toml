@@ -9,7 +9,7 @@ whisper = ["dep:whisper-rs"]
 voxtral = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util", "dep:url"]
 gemini = ["dep:reqwest", "dep:base64", "dep:serde_json", "dep:tokio-tungstenite", "dep:futures-util"]
 elevenlabs = ["dep:reqwest", "dep:serde_json"]
-pocket-tts = ["dep:pocket-tts"]
+pocket-tts = ["dep:pocket-tts", "dep:candle", "dep:hf-hub"]
 kyutai = [
     "dep:moshi",
     "dep:candle",
