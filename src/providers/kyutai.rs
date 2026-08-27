@@ -107,6 +107,47 @@ impl Config {
     }
 }
 
+/// Minimal SentencePiece decoder over the parsed .model proto — all this
+/// provider needs is id -> piece lookup. Pure Rust (`sentencepiece-model`,
+/// prost-based) rather than the `sentencepiece` C++ binding, whose
+/// libprotobuf clashes with onnxruntime's (loaded via fastembed) and aborts
+/// the process at startup.
+struct SpmDecoder {
+    /// Piece text by token id; `None` for non-decodable pieces (unk/bos/eos
+    /// and other control/byte pieces).
+    pieces: Vec<Option<String>>,
+}
+
+impl SpmDecoder {
+    fn open(path: &std::path::Path) -> Result<Self> {
+        use sentencepiece_model::Type;
+        let model = sentencepiece_model::SentencePieceModel::from_file(path)
+            .with_context(|| format!("kyutai: bad sentencepiece model {}", path.display()))?;
+        let pieces = model
+            .pieces()
+            .iter()
+            .map(|p| match p.r#type() {
+                Type::Normal | Type::UserDefined => Some(p.piece().to_string()),
+                _ => None,
+            })
+            .collect();
+        Ok(Self { pieces })
+    }
+
+    /// Decode a run of token ids: concatenate the pieces, map the "▁"
+    /// (U+2581) word-boundary marker to a space, and trim the leading space.
+    /// Out-of-range ids and control pieces contribute nothing.
+    fn decode(&self, ids: &[u32]) -> String {
+        let mut out = String::new();
+        for &id in ids {
+            if let Some(Some(piece)) = self.pieces.get(id as usize) {
+                out.push_str(piece);
+            }
+        }
+        out.replace('\u{2581}', " ").trim_start().to_string()
+    }
+}
+
 /// Events distilled from one model step, decoupled from moshi types so the
 /// stream loop stays simple.
 enum SttEvent {
@@ -120,7 +161,7 @@ enum SttEvent {
 /// KV/conv caches, so everything lives behind one mutex.
 struct Inner {
     state: moshi::asr::State,
-    text_tokenizer: sentencepiece::SentencePieceProcessor,
+    text_tokenizer: SpmDecoder,
     config: Config,
     dev: Device,
     /// Set once end-of-turn fired, cleared on the next word — avoids emitting
@@ -149,10 +190,7 @@ impl Inner {
                 }
                 moshi::asr::AsrMsg::Word { tokens, .. } => {
                     self.eot_fired = false;
-                    let word = self
-                        .text_tokenizer
-                        .decode_piece_ids(tokens)
-                        .unwrap_or_else(|_| String::new());
+                    let word = self.text_tokenizer.decode(tokens);
                     if !word.is_empty() {
                         events.push(SttEvent::Word(word));
                     }
@@ -195,7 +233,7 @@ impl KyutaiSttProvider {
         let mimi_file = repo.get(&config.mimi_name)?;
         let is_quantized = model_file.to_str().unwrap().ends_with(".gguf");
 
-        let text_tokenizer = sentencepiece::SentencePieceProcessor::open(&tokenizer_file)?;
+        let text_tokenizer = SpmDecoder::open(&tokenizer_file)?;
 
         let lm = if is_quantized {
             let vb_lm = candle_transformers::quantized_var_builder::VarBuilder::from_gguf(
