@@ -30,11 +30,18 @@ const MODEL_SAMPLE_RATE: u32 = 24_000;
 const STEP_SAMPLES: usize = 1920;
 /// Token frame rate, used to convert the ASR delay from seconds to tokens.
 const FRAMES_PER_SECOND: f64 = 12.5;
-/// End-of-turn detection uses the VAD extra head at this horizon index.
-/// `prs` = P(no voice activity) at horizons 0.5s, 1s, 2s, 3s — index 2 = 2s.
+/// End-of-turn detection uses the VAD extra heads: on every 80 ms `Step`,
+/// `prs[h][0]` is P(no voice activity within the next horizon window), for
+/// horizon windows [0.5 s, 1 s, 2 s, 3 s] indexed by `h`. A larger horizon
+/// asks "will the silence LAST longer?", so it waits out longer thinking
+/// pauses before declaring the turn over. Defaults below; tune with
+/// [`KyutaiSttProvider::with_end_of_turn`].
 const EOT_HORIZON: usize = 2;
-/// P(no voice activity) above this marks end of turn.
-const EOT_THRESHOLD: f32 = 0.5;
+/// P(no voice activity) must exceed this to count toward end of turn.
+const EOT_THRESHOLD: f32 = 0.6;
+/// Consecutive Steps (80 ms each) that must exceed the threshold before
+/// end-of-turn fires — a single-step spike no longer cuts the speaker off.
+const EOT_CONSECUTIVE: u32 = 3;
 
 /// Model config as stored in the HF repo's config.json
 /// (mirrors kyutai's stt-rs example).
@@ -164,9 +171,29 @@ struct Inner {
     text_tokenizer: SpmDecoder,
     config: Config,
     dev: Device,
+    /// End-of-turn tuning (see the `EOT_*` constants for semantics).
+    eot: EotConfig,
+    /// Consecutive Steps whose P(no voice activity) exceeded the threshold.
+    eot_streak: u32,
     /// Set once end-of-turn fired, cleared on the next word — avoids emitting
     /// EndOfTurn on every step while silence continues.
     eot_fired: bool,
+}
+
+/// Tunable end-of-turn detection parameters.
+struct EotConfig {
+    /// Index into the VAD horizons [0.5 s, 1 s, 2 s, 3 s].
+    horizon: usize,
+    /// P(no voice activity) that must be exceeded.
+    threshold: f32,
+    /// Consecutive qualifying Steps (80 ms each) required to fire.
+    consecutive: u32,
+}
+
+impl Default for EotConfig {
+    fn default() -> Self {
+        Self { horizon: EOT_HORIZON, threshold: EOT_THRESHOLD, consecutive: EOT_CONSECUTIVE }
+    }
 }
 
 impl Inner {
@@ -179,17 +206,28 @@ impl Inner {
         for asr_msg in asr_msgs.iter() {
             match asr_msg {
                 moshi::asr::AsrMsg::Step { prs, .. } => {
-                    if prs[EOT_HORIZON][0] > EOT_THRESHOLD && !self.eot_fired {
-                        self.eot_fired = true;
-                        debug!(pr = prs[EOT_HORIZON][0], "kyutai: end of turn");
-                        events.push(SttEvent::EndOfTurn);
+                    let pr = prs[self.eot.horizon][0];
+                    if pr > self.eot.threshold {
+                        if !self.eot_fired {
+                            self.eot_streak += 1;
+                            if self.eot_streak >= self.eot.consecutive {
+                                self.eot_fired = true;
+                                self.eot_streak = 0;
+                                debug!(pr, "kyutai: end of turn");
+                                events.push(SttEvent::EndOfTurn);
+                            }
+                        }
+                    } else {
+                        self.eot_streak = 0;
                     }
                 }
                 moshi::asr::AsrMsg::EndWord { .. } => {
                     self.eot_fired = false;
+                    self.eot_streak = 0;
                 }
                 moshi::asr::AsrMsg::Word { tokens, .. } => {
                     self.eot_fired = false;
+                    self.eot_streak = 0;
                     let word = self.text_tokenizer.decode(tokens);
                     if !word.is_empty() {
                         events.push(SttEvent::Word(word));
@@ -267,9 +305,39 @@ impl KyutaiSttProvider {
                 text_tokenizer,
                 config,
                 dev,
+                eot: EotConfig::default(),
+                eot_streak: 0,
                 eot_fired: false,
             })),
         })
+    }
+
+    /// Tune end-of-turn detection. `horizon` indexes the VAD prediction
+    /// windows [0.5 s, 1 s, 2 s, 3 s] — `prs[horizon][0]` is P(no voice
+    /// activity within that window), so a larger horizon waits out longer
+    /// thinking pauses. `threshold` is the probability that must be exceeded
+    /// and `consecutive` how many successive 80 ms steps must exceed it
+    /// before end-of-turn fires. `None` keeps the default (horizon 2 = the
+    /// 2 s window, threshold 0.6, consecutive 3).
+    pub fn with_end_of_turn(
+        self,
+        horizon: Option<usize>,
+        threshold: Option<f32>,
+        consecutive: Option<u32>,
+    ) -> Self {
+        {
+            let mut inner = self.inner.lock().expect("kyutai mutex poisoned");
+            if let Some(h) = horizon {
+                inner.eot.horizon = h.min(3);
+            }
+            if let Some(t) = threshold {
+                inner.eot.threshold = t;
+            }
+            if let Some(c) = consecutive {
+                inner.eot.consecutive = c.max(1);
+            }
+        }
+        self
     }
 
     fn device(cpu: bool) -> Result<Device> {
