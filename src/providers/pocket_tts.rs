@@ -262,6 +262,16 @@ impl PocketTtsProvider {
         self.sample_rate
     }
 
+    /// Pre-compute and cache the voice state for `voice` (empty = the default
+    /// voice) so the first `synthesize()`/`stream()` doesn't pay it — a .wav
+    /// reference clip in particular costs seconds to encode. Blocking (takes
+    /// the model mutex); call from `spawn_blocking`.
+    pub fn warm_voice(&self, voice: &str) -> Result<()> {
+        let voice = self.resolve_voice(voice).to_string();
+        let mut inner = self.inner.lock().expect("pocket-tts mutex poisoned");
+        inner.ensure_voice_state(&voice)
+    }
+
     fn resolve_voice<'a>(&'a self, voice: &'a str) -> &'a str {
         if voice.is_empty() {
             &self.default_voice
