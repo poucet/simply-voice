@@ -5,10 +5,10 @@
 // API assumptions compile-verified against moshi 0.6.4 (mirrors the upstream
 // kyutai stt-rs example): asr::State::new, step_pcm, AsrMsg variants,
 // lm::Config/ExtraHeadsConfig fields, and the Send bounds needed for
-// Arc<Mutex<Inner>> to cross into spawn_blocking. Runtime behavior still
-// unverified: HF auto-download, step_pcm accepting a final partial (<1920
-// sample) frame, and prs semantics — P(no voice activity) at horizons
-// [0.5s, 1s, 2s, 3s], valid only because we load with VAD extra heads enabled.
+// Arc<Mutex<Inner>> to cross into spawn_blocking. `asr::State::reset` clears
+// the LM and Mimi streaming caches and the per-item word state (read in the
+// moshi 0.6.4 source). prs semantics — P(no voice activity) at horizons
+// [0.5s, 1s, 2s, 3s] — hold only because we load with VAD extra heads enabled.
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -155,6 +155,12 @@ impl SpmDecoder {
     }
 }
 
+/// Silent steps past the ASR delay when flushing ended input: a word is only
+/// emitted once the model writes the boundary after it, which the delay alone
+/// does not reach (measured: the last word of `run-the-tests.wav` was lost
+/// with 2 steps). One second, as in the upstream example.
+const FLUSH_MARGIN_STEPS: usize = FRAMES_PER_SECOND as usize + 1;
+
 /// Events distilled from one model step, decoupled from moshi types so the
 /// stream loop stays simple.
 enum SttEvent {
@@ -175,6 +181,10 @@ struct Inner {
     eot: EotConfig,
     /// Consecutive Steps whose P(no voice activity) exceeded the threshold.
     eot_streak: u32,
+    /// End of turn was detected; this many more Steps run before it is
+    /// emitted, so words still inside the ASR delay join the turn they were
+    /// spoken in.
+    eot_countdown: Option<usize>,
     /// Set once end-of-turn fired, cleared on the next word — avoids emitting
     /// EndOfTurn on every step while silence continues.
     eot_fired: bool,
@@ -197,37 +207,64 @@ impl Default for EotConfig {
 }
 
 impl Inner {
-    /// Step the model over one frame of 24 kHz f32 PCM (normally
-    /// `STEP_SAMPLES` long; the final frame of a batch may be shorter).
+    /// Start a new session: clear the model's streaming state (KV and Mimi
+    /// caches, word in progress) and the end-of-turn tracking, so nothing from
+    /// the previous `stream()` or `transcribe()` leaks into this one.
+    fn reset(&mut self) -> Result<()> {
+        self.state.reset()?;
+        self.eot_streak = 0;
+        self.eot_countdown = None;
+        self.eot_fired = false;
+        Ok(())
+    }
+
+    /// Step the model over one `STEP_SAMPLES` frame of 24 kHz f32 PCM.
+    ///
+    /// End of turn is emitted `asr_delay_in_tokens` Steps after the VAD head
+    /// calls it: the head reads the audio as it arrives, but words come out
+    /// that many Steps later, so emitting at once would cut off the last word.
+    /// It is pushed after this step's words, which belong to the turn.
     fn step(&mut self, frame: &[f32]) -> Result<Vec<SttEvent>> {
         let pcm = Tensor::new(frame, &self.dev)?.reshape((1, 1, ()))?;
         let asr_msgs = self.state.step_pcm(pcm, None, &().into(), |_, _, _| ())?;
         let mut events = Vec::new();
+        let mut end_of_turn = false;
         for asr_msg in asr_msgs.iter() {
             match asr_msg {
                 moshi::asr::AsrMsg::Step { prs, .. } => {
                     let pr = prs[self.eot.horizon][0];
-                    if pr > self.eot.threshold {
+                    if let Some(left) = self.eot_countdown {
+                        self.eot_countdown = left.checked_sub(1).filter(|&n| n > 0);
+                        end_of_turn = self.eot_countdown.is_none();
+                    } else if pr > self.eot.threshold {
                         if !self.eot_fired {
                             self.eot_streak += 1;
                             if self.eot_streak >= self.eot.consecutive {
                                 self.eot_fired = true;
                                 self.eot_streak = 0;
                                 debug!(pr, "kyutai: end of turn");
-                                events.push(SttEvent::EndOfTurn);
+                                let delay = self.state.asr_delay_in_tokens();
+                                self.eot_countdown = Some(delay).filter(|&n| n > 0);
+                                end_of_turn = self.eot_countdown.is_none();
                             }
                         }
                     } else {
                         self.eot_streak = 0;
                     }
                 }
+                // A word still inside the delay of a pending end of turn is
+                // the tail of that turn, not the start of a new one.
                 moshi::asr::AsrMsg::EndWord { .. } => {
-                    self.eot_fired = false;
-                    self.eot_streak = 0;
+                    if self.eot_countdown.is_none() {
+                        self.eot_fired = false;
+                        self.eot_streak = 0;
+                    }
                 }
                 moshi::asr::AsrMsg::Word { tokens, .. } => {
-                    self.eot_fired = false;
-                    self.eot_streak = 0;
+                    if self.eot_countdown.is_none() {
+                        self.eot_fired = false;
+                        self.eot_streak = 0;
+                    }
                     let word = self.text_tokenizer.decode(tokens);
                     if !word.is_empty() {
                         events.push(SttEvent::Word(word));
@@ -235,7 +272,31 @@ impl Inner {
                 }
             }
         }
+        if end_of_turn {
+            events.push(SttEvent::EndOfTurn);
+        }
         Ok(events)
+    }
+
+    /// Step `pcm` through the model in whole frames. The remainder that does
+    /// not fill a frame is left in `pcm` for the next call.
+    fn feed(&mut self, pcm: &mut Vec<f32>) -> Result<Vec<SttEvent>> {
+        let whole = pcm.len() / STEP_SAMPLES * STEP_SAMPLES;
+        let mut events = Vec::new();
+        for frame in pcm.drain(..whole).as_slice().chunks_exact(STEP_SAMPLES) {
+            events.extend(self.step(frame)?);
+        }
+        Ok(events)
+    }
+
+    /// The input has ended: pad what is left of `pcm` to a whole frame, then
+    /// step silence through the ASR delay so the words it still holds come out
+    /// and a pending end of turn is emitted.
+    fn finish(&mut self, mut pcm: Vec<f32>) -> Result<Vec<SttEvent>> {
+        let flush = self.state.asr_delay_in_tokens() + FLUSH_MARGIN_STEPS;
+        let padded = pcm.len().div_ceil(STEP_SAMPLES) * STEP_SAMPLES;
+        pcm.resize(padded + flush * STEP_SAMPLES, 0.0);
+        self.feed(&mut pcm)
     }
 }
 
@@ -243,9 +304,13 @@ impl Inner {
 ///
 /// The moshi ASR state is stateful and owns the model weights, so the provider
 /// serializes all use behind a mutex: **only one `stream()` or `transcribe()`
-/// call can run at a time**, and the model's streaming state (KV caches, VAD)
-/// **persists across calls** — a batch `transcribe()` between streams will
-/// leave its audio in the model's context.
+/// call can run at a time**. Each call starts from a reset model, so one
+/// provider serves any number of sessions.
+///
+/// A stream's final (`is_final`) arrives one ASR delay (0.5 s for the default
+/// model) after the end-of-turn head fires, carrying every word of the turn.
+/// Dropping the audio sender flushes the delay with silence, so the last words
+/// of a cut-off utterance still arrive, in one last final.
 pub struct KyutaiSttProvider {
     inner: Arc<Mutex<Inner>>,
 }
@@ -307,6 +372,7 @@ impl KyutaiSttProvider {
                 dev,
                 eot: EotConfig::default(),
                 eot_streak: 0,
+                eot_countdown: None,
                 eot_fired: false,
             })),
         })
@@ -398,28 +464,26 @@ impl SttProvider for KyutaiSttProvider {
 
         let text = tokio::task::spawn_blocking(move || -> Result<String> {
             let mut inner = inner.lock().expect("kyutai mutex poisoned");
+            inner.reset()?;
 
-            // Pad like the upstream example: leading silence to warm up the
-            // model, trailing silence to flush words held back by the ASR
-            // delay (plus a second of margin).
+            // Leading silence to warm up the model, as the upstream example
+            // does; `finish` flushes the words held back by the ASR delay.
             let prefix =
                 (inner.config.stt_config.audio_silence_prefix_seconds * MODEL_SAMPLE_RATE as f64)
                     as usize;
             if prefix > 0 {
                 pcm.splice(0..0, vec![0.0; prefix]);
             }
-            let suffix = (inner.config.stt_config.audio_delay_seconds * MODEL_SAMPLE_RATE as f64)
-                as usize;
-            pcm.resize(pcm.len() + suffix + MODEL_SAMPLE_RATE as usize, 0.0);
 
-            let mut words = Vec::new();
-            for frame in pcm.chunks(STEP_SAMPLES) {
-                for event in inner.step(frame)? {
-                    if let SttEvent::Word(word) = event {
-                        words.push(word);
-                    }
-                }
-            }
+            let mut events = inner.feed(&mut pcm)?;
+            events.extend(inner.finish(pcm)?);
+            let words: Vec<String> = events
+                .into_iter()
+                .filter_map(|event| match event {
+                    SttEvent::Word(word) => Some(word),
+                    SttEvent::EndOfTurn => None,
+                })
+                .collect();
             Ok(words.join(" "))
         })
         .await??;
@@ -440,61 +504,61 @@ impl SttProvider for KyutaiSttProvider {
             // The lock is held for the life of the stream — see the type-level
             // doc comment about single-session use.
             let mut inner = inner.lock().expect("kyutai mutex poisoned");
+            if let Err(e) = inner.reset() {
+                error!("kyutai stream reset failed: {e:#}");
+                return;
+            }
 
             // Resampled 24 kHz samples waiting to fill a full model frame.
             let mut pending: Vec<f32> = Vec::new();
             // Words of the utterance in progress, flushed at end of turn.
             let mut utterance: Vec<String> = Vec::new();
+            // Forward events: each word as an interim result, and at end of
+            // turn the accumulated utterance as a final. False once the
+            // receiver is gone.
+            let emit = |events: Vec<SttEvent>, utterance: &mut Vec<String>| {
+                for event in events {
+                    let msg = match event {
+                        SttEvent::Word(word) => {
+                            utterance.push(word.clone());
+                            Transcription { text: word, is_final: false }
+                        }
+                        SttEvent::EndOfTurn if utterance.is_empty() => continue,
+                        SttEvent::EndOfTurn => Transcription {
+                            text: std::mem::take(utterance).join(" "),
+                            is_final: true,
+                        },
+                    };
+                    if text_tx.blocking_send(msg).is_err() {
+                        debug!("kyutai stream: receiver dropped");
+                        return false;
+                    }
+                }
+                true
+            };
 
             while let Some(chunk) = audio_rx.blocking_recv() {
                 pending.extend_from_slice(&Self::to_model_pcm(&chunk.data));
-
-                while pending.len() >= STEP_SAMPLES {
-                    let frame: Vec<f32> = pending.drain(..STEP_SAMPLES).collect();
-                    let events = match inner.step(&frame) {
-                        Ok(events) => events,
-                        Err(e) => {
-                            error!("kyutai stream step failed: {e:#}");
-                            return;
-                        }
-                    };
-                    for event in events {
-                        let msg = match event {
-                            // Interim result: one word at a time.
-                            SttEvent::Word(word) => {
-                                utterance.push(word.clone());
-                                Transcription {
-                                    text: word,
-                                    is_final: false,
-                                }
-                            }
-                            // End of turn: flush the accumulated utterance.
-                            SttEvent::EndOfTurn => {
-                                if utterance.is_empty() {
-                                    continue;
-                                }
-                                let text = utterance.join(" ");
-                                utterance.clear();
-                                Transcription {
-                                    text,
-                                    is_final: true,
-                                }
-                            }
-                        };
-                        if text_tx.blocking_send(msg).is_err() {
-                            debug!("kyutai stream: receiver dropped");
-                            return;
-                        }
+                let events = match inner.feed(&mut pending) {
+                    Ok(events) => events,
+                    Err(e) => {
+                        error!("kyutai stream step failed: {e:#}");
+                        return;
                     }
+                };
+                if !emit(events, &mut utterance) {
+                    return;
                 }
             }
 
-            // Sender dropped: flush whatever remains as a final result.
-            if !utterance.is_empty() {
-                let _ = text_tx.blocking_send(Transcription {
-                    text: utterance.join(" "),
-                    is_final: true,
-                });
+            // Sender dropped: flush the ASR delay, then whatever remains of
+            // the utterance as a final.
+            match inner.finish(std::mem::take(&mut pending)) {
+                Ok(mut events) => {
+                    events.push(SttEvent::EndOfTurn);
+                    emit(events, &mut utterance);
+                }
+                Err(e) => error!("kyutai stream flush failed: {e:#}"),
             }
         });
 
