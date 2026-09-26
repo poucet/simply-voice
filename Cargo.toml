@@ -1,7 +1,9 @@
 [package]
 name = "simply-voice"
-version.workspace = true
-edition.workspace = true
+version = "0.3.0"
+edition = "2021"
+description = "Voice providers: STT, TTS, realtime and VAD (Pocket TTS and Kyutai STT locally; Voxtral, Whisper, ElevenLabs, Gemini remotely)"
+repository = "https://github.com/poucet/simply-voice"
 
 [features]
 default = []
@@ -23,22 +25,22 @@ kyutai = [
 metal = ["candle?/metal", "candle-nn?/metal", "pocket-tts?/metal"]
 
 [dependencies]
-anyhow = { workspace = true }
-async-trait = { workspace = true }
-bytes = { workspace = true }
-futures = { workspace = true }
-serde = { workspace = true }
-tokio = { workspace = true }
-tracing = { workspace = true }
+anyhow = { version = "1" }
+async-trait = { version = "0.1" }
+bytes = { version = "1" }
+futures = { version = "0.3" }
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["sync", "time"] }
+tracing = { version = "0.1" }
 
 # Optional provider deps
 whisper-rs = { version = "0.15.1", optional = true }
-reqwest = { workspace = true, features = ["rustls-tls", "multipart"], optional = true }
-base64 = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
-tokio-tungstenite = { workspace = true, features = ["rustls-tls-webpki-roots"], optional = true }
-futures-util = { workspace = true, optional = true }
-url = { workspace = true, optional = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"], optional = true }
+base64 = { version = "0.22", optional = true }
+serde_json = { version = "1", optional = true }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"], optional = true }
+futures-util = { version = "0.3", optional = true }
+url = { version = "2", optional = true }
 
 # Local-model providers (pocket-tts TTS, Kyutai streaming STT)
 pocket-tts = { version = "0.6", optional = true }
@@ -53,4 +55,4 @@ sentencepiece-model = { version = "0.1.4", optional = true }
 hf-hub = { version = "0.4.3", optional = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
