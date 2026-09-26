@@ -521,7 +521,10 @@ impl SttProvider for KyutaiSttProvider {
                     let msg = match event {
                         SttEvent::Word(word) => {
                             utterance.push(word.clone());
-                            Transcription { text: word, is_final: false }
+                            Transcription {
+                                text: word,
+                                is_final: false,
+                            }
                         }
                         SttEvent::EndOfTurn if utterance.is_empty() => continue,
                         SttEvent::EndOfTurn => Transcription {

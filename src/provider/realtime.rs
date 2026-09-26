@@ -46,19 +46,10 @@ pub trait RealtimeProvider: Send + Sync {
 }
 
 /// Configuration for a realtime voice session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RealtimeConfig {
     /// System prompt / instructions for the model.
     pub system_prompt: Option<String>,
     /// Voice to use for audio output.
     pub voice: Option<String>,
-}
-
-impl Default for RealtimeConfig {
-    fn default() -> Self {
-        Self {
-            system_prompt: None,
-            voice: None,
-        }
-    }
 }
