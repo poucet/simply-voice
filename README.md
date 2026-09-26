@@ -25,6 +25,7 @@ simply-voice ├─ TtsProvider ──── synthesize(text, voice) · stream()
 | `gemini` | `GeminiProvider` | ✅ | ✅ | remote API |
 | `elevenlabs` | `ElevenLabsProvider` | ✅ | ✅ | remote API |
 
+* **`PocketTtsProvider::with_voice_dir`** adds custom voices: each `*.safetensors` embedding or `*.wav` clip in the directory is a voice named after its file stem.
 * **`metal`** turns on Apple Silicon acceleration for the candle providers.
 * **`whisper`** needs cmake to build.
 * **No feature is on by default.**

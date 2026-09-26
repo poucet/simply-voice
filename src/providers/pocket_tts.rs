@@ -19,7 +19,7 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
@@ -33,7 +33,8 @@ const DEFAULT_VARIANT: &str = pocket_tts::config::defaults::DEFAULT_VARIANT;
 /// Stock voices published alongside the released weights (embeddings in the
 /// [`STOCK_VOICE_REPO`] HF repo). A voice spec may also be a path to a .wav
 /// (cloned on the fly, slow), a precomputed .safetensors embedding (fast), or
-/// an `hf://owner/repo/file` URL — see [`resolve_voice_state`].
+/// an `hf://owner/repo/file` URL — see [`resolve_voice_state`] — or the stem
+/// of a file in the provider's voice directory ([`PocketTtsProvider::with_voice_dir`]).
 pub const BUNDLED_VOICES: &[&str] = &[
     "alba", "marius", "javert", "jean", "fantine", "cosette", "eponine", "azelma",
 ];
@@ -137,22 +138,61 @@ pub fn resolve_voice_state(
     voice_state_from_file(model, Path::new(spec))
 }
 
+/// Voice-file extensions [`voice_state_from_file`] loads, lowercased.
+const EMBEDDING_EXT: &str = "safetensors";
+const CLIP_EXTS: &[&str] = &["wav", "wave"];
+
+/// Lowercased extension of `path`, empty when it has none.
+fn lower_ext(path: &Path) -> String {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Custom voices in `dir`: one `(stem, path)` per `*.safetensors` or `*.wav`
+/// file, sorted by stem. When a stem has both, the embedding wins (it loads
+/// fast). Stems that shadow a bundled name are skipped, so stock names keep
+/// meaning the stock voice. A missing or unreadable directory yields none.
+fn custom_voices(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut found: std::collections::BTreeMap<String, PathBuf> = Default::default();
+    for path in entries.flatten().map(|e| e.path()) {
+        let ext = lower_ext(&path);
+        let is_embedding = ext == EMBEDDING_EXT;
+        if !(is_embedding || CLIP_EXTS.contains(&ext.as_str())) || !path.is_file() {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if BUNDLED_VOICES.contains(&stem) {
+            continue;
+        }
+        let keep_existing = found
+            .get(stem)
+            .is_some_and(|p| lower_ext(p) == EMBEDDING_EXT);
+        if !keep_existing || is_embedding {
+            found.insert(stem.to_string(), path.clone());
+        }
+    }
+    found.into_iter().collect()
+}
+
 /// Load a voice from a local file: .safetensors embedding (fast path) or .wav
 /// reference clip (encoded through Mimi, slow).
 fn voice_state_from_file(
     model: &pocket_tts::TTSModel,
     path: &Path,
 ) -> Result<pocket_tts::ModelState> {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
+    let ext = lower_ext(path);
     match ext.as_str() {
-        "safetensors" => model
+        EMBEDDING_EXT => model
             .get_voice_state_from_prompt_file(path)
             .with_context(|| format!("pocket-tts: failed to load embedding {path:?}")),
-        "wav" | "wave" => model
+        e if CLIP_EXTS.contains(&e) => model
             .get_voice_state(path)
             .with_context(|| format!("pocket-tts: failed to encode reference clip {path:?}")),
         _ => anyhow::bail!(
@@ -211,6 +251,8 @@ pub struct PocketTtsProvider {
     inner: Arc<Mutex<Inner>>,
     default_voice: String,
     sample_rate: u32,
+    /// Directory of custom voices, see [`Self::with_voice_dir`].
+    voice_dir: Option<PathBuf>,
 }
 
 impl PocketTtsProvider {
@@ -255,7 +297,26 @@ impl PocketTtsProvider {
             })),
             default_voice,
             sample_rate,
+            voice_dir: None,
         })
+    }
+
+    /// Add a directory of custom voices: every `*.safetensors` embedding or
+    /// `*.wav` reference clip in it becomes a voice whose id is the file
+    /// stem. The directory is re-read on each lookup, so voices dropped in
+    /// later appear without a restart. A missing directory is not an error:
+    /// only the stock voices are offered.
+    pub fn with_voice_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.voice_dir = Some(dir.into());
+        self
+    }
+
+    /// Custom voices in the voice directory, if one is set.
+    fn custom_voices(&self) -> Vec<(String, PathBuf)> {
+        self.voice_dir
+            .as_deref()
+            .map(custom_voices)
+            .unwrap_or_default()
     }
 
     pub fn sample_rate(&self) -> u32 {
@@ -267,17 +328,28 @@ impl PocketTtsProvider {
     /// reference clip in particular costs seconds to encode. Blocking (takes
     /// the model mutex); call from `spawn_blocking`.
     pub fn warm_voice(&self, voice: &str) -> Result<()> {
-        let voice = self.resolve_voice(voice).to_string();
+        let voice = self.resolve_voice(voice);
         let mut inner = self.inner.lock().expect("pocket-tts mutex poisoned");
         inner.ensure_voice_state(&voice)
     }
 
-    fn resolve_voice<'a>(&'a self, voice: &'a str) -> &'a str {
-        if voice.is_empty() {
-            &self.default_voice
+    /// Turn a caller's voice id into the spec [`resolve_voice_state`] loads:
+    /// empty means the default voice, and a custom voice's stem becomes its
+    /// file path. Anything else (stock name, path, `hf://` URL) passes
+    /// through. The result is also the voice-state cache key, so a custom
+    /// voice is cached under its path, not under its bare stem.
+    fn resolve_voice(&self, voice: &str) -> String {
+        let voice = if voice.is_empty() {
+            self.default_voice.as_str()
         } else {
             voice
+        };
+        if !BUNDLED_VOICES.contains(&voice) {
+            if let Some((_, path)) = self.custom_voices().into_iter().find(|(s, _)| s == voice) {
+                return path.to_string_lossy().into_owned();
+            }
         }
+        voice.to_string()
     }
 
     fn f32_to_pcm16_bytes(samples: &[f32]) -> Bytes {
@@ -301,7 +373,7 @@ impl PocketTtsProvider {
 #[async_trait::async_trait]
 impl TtsProvider for PocketTtsProvider {
     async fn synthesize(&self, text: &str, voice: &str) -> Result<Audio> {
-        let voice = self.resolve_voice(voice).to_string();
+        let voice = self.resolve_voice(voice);
         let text = text.to_string();
         let inner = Arc::clone(&self.inner);
         let sample_rate = self.sample_rate;
@@ -326,7 +398,7 @@ impl TtsProvider for PocketTtsProvider {
         let (audio_tx, audio_rx) = mpsc::channel::<AudioChunk>(32);
 
         let inner = Arc::clone(&self.inner);
-        let voice = self.default_voice.clone();
+        let voice = self.resolve_voice("");
 
         tokio::task::spawn_blocking(move || {
             // The lock is held for the life of the stream — see the type-level
@@ -368,12 +440,41 @@ impl TtsProvider for PocketTtsProvider {
     }
 
     async fn voices(&self) -> Result<Vec<Voice>> {
-        Ok(BUNDLED_VOICES
-            .iter()
+        let stock = BUNDLED_VOICES.iter().map(|name| (*name).to_string());
+        let custom = self.custom_voices().into_iter().map(|(stem, _)| stem);
+        Ok(stock
+            .chain(custom)
             .map(|name| Voice {
-                id: (*name).to_string(),
-                name: (*name).to_string(),
+                id: name.clone(),
+                name,
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn custom_voices_lists_voice_files_by_stem() {
+        let dir = std::env::temp_dir().join(format!("pocket-tts-voices-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["chris.wav", "chris.safetensors", "bob.WAV", "alba.wav", "notes.txt"] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        let found = custom_voices(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let stems: Vec<&str> = found.iter().map(|(s, _)| s.as_str()).collect();
+        // Sorted, stock names skipped, non-voice files ignored.
+        assert_eq!(stems, ["bob", "chris"]);
+        // The embedding wins over the clip for the same stem.
+        assert_eq!(lower_ext(&found[1].1), EMBEDDING_EXT);
+    }
+
+    #[test]
+    fn missing_voice_dir_is_empty() {
+        assert!(custom_voices(Path::new("/nonexistent/pocket-tts-voices")).is_empty());
     }
 }
