@@ -2,6 +2,7 @@
 name = "simply-voice"
 version = "0.3.0"
 edition = "2021"
+license = "MIT"
 description = "Voice providers: STT, TTS, realtime and VAD (Pocket TTS and Kyutai STT locally; Voxtral, Whisper, ElevenLabs, Gemini remotely)"
 repository = "https://github.com/poucet/simply-voice"
 
