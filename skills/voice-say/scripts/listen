@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Listen for one spoken turn and print it as one line. Exit 0 heard (text on
+# stdout), 1 nobody spoke within --timeout, 2 error.
+here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$here/sv" listen "$@" 2>/dev/null

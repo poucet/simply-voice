@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Run simply-voice's `sv` with these arguments, building it on first use.
+# Finds the repo from this script's real location, so it works from any
+# symlinked copy of the skill. Exits 2 if `sv` cannot be built.
+set -euo pipefail
+
+# -P resolves the symlinked skill folder to its real place in the repo.
+here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+root="$(cd "$here/../../.." && pwd)"
+sv="$root/target/release/sv"
+
+if [[ ! -x "$sv" ]]; then
+  cargo build --release --quiet -p simply-voice-cli --manifest-path "$root/Cargo.toml" >/dev/null 2>&1 || exit 2
+fi
+exec "$sv" "$@"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Speak each argument aloud as a sentence, in order. Quiet; exits non-zero on
+# failure.
+here="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec "$here/sv" say "$@" >/dev/null 2>&1

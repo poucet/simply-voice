@@ -2,7 +2,7 @@
 //! the Hugging Face cache; the first run downloads ~2 GB), so they only build
 //! with `--features kyutai`; add `metal` on Apple Silicon.
 //!
-//! Fixtures (`tests/fixtures/`, 16 kHz mono PCM16, from voice-agent):
+//! Fixtures (`tests/fixtures/`, 16 kHz mono PCM16; shared with the `sv` turn tests):
 //! - `run-the-tests.wav`, `two-utterances.wav` — macOS `say -v Samantha`; the
 //!   second is two sentences with 3 s of silence between them.
 //! - `aurora-loopback.wav` — Aurora's pocket-tts voice read back.

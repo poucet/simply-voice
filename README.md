@@ -2,6 +2,8 @@
 
 Speech-to-text, text-to-speech and voice activity detection behind three traits. Each provider is a Cargo feature.
 
+The repo also ships `sv`, a small command line on top of the library: an easy way for a person or an agent to speak and listen.
+
 ## The shape
 
 ```
@@ -40,16 +42,33 @@ simply-voice = { git = "https://github.com/poucet/simply-voice", features = ["ky
 
 * **Local models** download from Hugging Face on first use, into `~/.cache/huggingface`.
 
+## sv
+
+```
+sv say "The build is green."     speak in the configured voice; returns when done
+sv listen                        wait for one spoken turn, print it as one line of text
+sv devices [--pick]              list audio devices, or choose and save them
+```
+
+* **Build**: `cargo build --release -p simply-voice-cli`, giving `target/release/sv`.
+* **`sv listen` exits** 0 with the transcript on stdout, 1 when nobody started speaking within `--timeout` (30 s), 2 on an error.
+* **Devices**: `--input` / `--output` on every command take a number from `sv devices` or part of a device name.
+* **Config**: `~/.config/simply-voice/config.toml`, sections `[audio]`, `[stt]`, `[tts]`; unknown keys are ignored.
+* **For agents**: the `voice-say` skill in `skills/voice-say` wraps `sv say` and `sv listen`.
+
+More in [docs/guides/BUILD.md](docs/guides/BUILD.md).
+
 ## Tests
 
 * **The Kyutai tests load the real model.** The first run downloads about 2 GB.
-  * `cargo test --features kyutai,metal --test kyutai -- --nocapture`
+  * `cargo test -p simply-voice --features kyutai,metal --test kyutai -- --nocapture`
   * `--nocapture` prints the end-of-speech to final latency per utterance.
-* **Fixtures** in `tests/fixtures/` are 16 kHz mono PCM16.
+* **Fixtures** in `crates/simply-voice/tests/fixtures/` are 16 kHz mono PCM16, shared with the `sv` turn tests.
+* `cargo test --workspace` runs everything else, the `sv` turn tests included (they load Kyutai too).
 
 ## Where it is used
 
 * [lumina](https://github.com/poucet/lumina): the simply daemon and Aurora.
-* voice-agent: the `va` voice client.
+* `sv`, in this repo.
 
 This crate started inside lumina. Its history came along.
