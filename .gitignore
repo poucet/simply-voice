@@ -1,3 +1,6 @@
 target/
 .DS_Store
 docs/ops/
+
+# local project rules: may name private infrastructure (e.g. the Linear workspace)
+AGENTS.project.md
