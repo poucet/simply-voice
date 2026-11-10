@@ -1,6 +1,6 @@
 ---
 name: voice-say
-description: Talk to the user out loud through simply-voice's `sv`: speak a short message in the Aurora voice (`say`), or ask a question and get the spoken answer back as text (`listen`). Use when the user asked to be told or asked out loud, or when long-running work finishes, fails, or is blocked on them and they may not be watching the screen.
+description: "Talk to the user out loud through simply-voice's `sv`: speak a short message in the Aurora voice (`say`), or ask a question and get the spoken answer back as text (`listen`). Use when the user asked to be told or asked out loud, or when long-running work finishes, fails, or is blocked on them and they may not be watching the screen."
 ---
 
 # voice-say
