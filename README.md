@@ -37,7 +37,7 @@ simply-voice ├─ TtsProvider ──── synthesize(text, voice) · stream()
 
 ```toml
 [dependencies]
-simply-voice = { git = "https://github.com/poucet/simply-voice", features = ["kyutai", "pocket-tts", "metal"] }
+simply-voice = { git = "https://github.com/simply-audio/simply-voice", features = ["kyutai", "pocket-tts", "metal"] }
 ```
 
 * **Local models** download from Hugging Face on first use, into `~/.cache/huggingface`.
